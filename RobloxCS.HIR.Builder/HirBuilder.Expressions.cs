@@ -145,6 +145,7 @@ public sealed partial class HirBuilder {
                     return new HirThis {
                         Location = instanceReferenceOperation.Syntax.GetLocation(),
                         Type = instanceReferenceOperation.Type!,
+                        IsBase = instanceReferenceOperation.Syntax is BaseExpressionSyntax,
                     };
                 }
 

@@ -15,6 +15,8 @@ public class Regression {
     [TestCase("class Box<T> { static int Value = 1; }", "Static state on generic classes")]
     [TestCase("class Box<T> { public static T Get() => default!; }", "default(T) in static generic-class members")]
     [TestCase("class Box<T> { public U Get<U>(U value) => value; }", "Generic methods are not supported")]
+    [TestCase("class Base { public int Get() => 1; } class Child : Base { public new int Get() => 2; }", "Hidden instance methods")]
+    [TestCase("class Base { public int Value; } class Child : Base { public new int Value; }", "Hidden instance fields")]
     public void UnsupportedClassFeatures(string source, string diagnostic) {
         var path = Path.Join(Path.GetTempPath(), $"robloxcs-{Guid.NewGuid():N}.cs");
         try {

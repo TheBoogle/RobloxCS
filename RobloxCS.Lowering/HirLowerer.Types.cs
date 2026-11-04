@@ -27,8 +27,8 @@ public sealed partial class HirLowerer {
             return [];
         }
 
-        if (symbol.BaseType is { SpecialType: not SpecialType.System_Object }) {
-            Unsupported("Inheritance is not supported yet.", type.Location);
+        if (symbol.BaseType is { SpecialType: not SpecialType.System_Object } baseType && !IsTranspiledType(baseType)) {
+            Unsupported("Only inheritance from transpiled classes is supported.", type.Location);
 
             return [];
         }
@@ -51,7 +51,14 @@ public sealed partial class HirLowerer {
             symbol.IsStatic ? "static" : "instance", name, instanceFields.Count, staticFields.Count, type.Methods.Length
         );
 
-        var statements = new List<Statement> { Local(name, Table()) };
+        Expression classTable = Table();
+        if (symbol.BaseType is { SpecialType: not SpecialType.System_Object } parent) {
+            classTable = Call("setmetatable", Table(), new TableConstructorExpression {
+                Fields = [new NameKey { Key = "__index", Value = Name(ReferenceType(parent, type.Location)) }],
+            });
+        }
+
+        var statements = new List<Statement> { Local(name, classTable) };
 
         if (!symbol.IsStatic) {
             statements.Add(Assign(Index(name, "__index"), Name(name)));
@@ -139,6 +146,16 @@ public sealed partial class HirLowerer {
             initializerBody.AddRange(_names.Capture(() => _names.Emit(Assign(Index("self", field.Symbol.SlotName()), LowerFieldValue(field)))));
         }
 
+        if (constructor?.ConstructorInitializer is { } initializer && SymbolEqualityComparer.Default.Equals(initializer.Method.ContainingType.OriginalDefinition, type.Symbol)) {
+            Unsupported("Delegating constructors are not supported yet.", initializer.Location);
+        } else if (type.Symbol.BaseType is { SpecialType: not SpecialType.System_Object } baseType) {
+            initializerBody.AddRange(_names.Capture(() => {
+                var arguments = constructor?.ConstructorInitializer?.Arguments.Select(argument => LowerExpression(argument.Value)).ToList() ?? [];
+                arguments.AddRange(baseType.TypeArguments.Select(argument => LowerDefaultValue(argument, type.Location)));
+                _names.Emit(Stmt(Call(Index(ReferenceType(baseType, type.Location), "__init"), [Name("self"), .. arguments])));
+            }));
+        }
+
         if (constructor is { IsImplicit: false }) {
             initializerBody.AddRange(LowerBlock(constructor.Block));
         }
@@ -179,8 +196,7 @@ public sealed partial class HirLowerer {
 
     private TypeInfo LowerInstanceType(INamedTypeSymbol symbol, Location location) {
         var fields = new Dictionary<string, TypeInfo>(StringComparer.Ordinal);
-        var current = symbol;
-        {
+        for (var current = symbol; current is { SpecialType: not SpecialType.System_Object }; current = current.BaseType) {
             foreach (var parameter in current.OriginalDefinition.TypeParameters) fields.TryAdd(DefaultSlot(parameter), Type("any"));
             foreach (var member in current.GetMembers().Where(member => !member.IsStatic)) {
                 switch (member) {

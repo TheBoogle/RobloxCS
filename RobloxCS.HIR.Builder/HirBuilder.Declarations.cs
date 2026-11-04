@@ -122,7 +122,30 @@ public sealed partial class HirBuilder {
         var isEntryPoint = IsEntryPoint(method);
 
         var parameters = method.Parameters.Select(BuildParameter).ToList();
-        var block = isImplicitCtor ? BuildImplicitConstructorBlock(method) : BuildMethodBlock(method);
+        var block = method.IsAbstract ? null : isImplicitCtor ? BuildImplicitConstructorBlock(method) : BuildMethodBlock(method);
+        HirCall? initializer = null;
+        if (isCtor && !isImplicitCtor && method.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is ConstructorDeclarationSyntax syntax
+            && Semantics.GetOperation(syntax) is IConstructorBodyOperation { Initializer: IExpressionStatementOperation { Operation: IInvocationOperation invocation } }) {
+            initializer = (HirCall)BuildExpression(invocation);
+        }
+        if (isCtor && initializer is null && method.ContainingType.BaseType is { SpecialType: not SpecialType.System_Object } baseType) {
+            var baseConstructor = baseType.InstanceConstructors.FirstOrDefault(candidate => candidate.Parameters.Length == 0)
+                ?? baseType.InstanceConstructors.FirstOrDefault(candidate => candidate.Parameters.All(parameter => parameter.IsOptional));
+            if (baseConstructor is not null) {
+                initializer = new HirCall {
+                    Location = method.Locations.ResolveSingle(),
+                    Type = baseConstructor.ReturnType,
+                    Method = baseConstructor,
+                    Receiver = null,
+                    Arguments = [.. baseConstructor.Parameters.Select(parameter => new HirArgument {
+                        Location = method.Locations.ResolveSingle(),
+                        Symbol = parameter,
+                        Value = new HirLiteral { Location = method.Locations.ResolveSingle(), Type = parameter.Type, Value = parameter.ExplicitDefaultValue },
+                    })],
+                    IsExtension = false,
+                };
+            }
+        }
 
         return new HirMethod {
             Location = method.Locations.ResolveSingle(),
@@ -130,6 +153,7 @@ public sealed partial class HirBuilder {
             Parameters = [.. parameters],
             TypeParameters = method.TypeParameters,
             Block = block,
+            ConstructorInitializer = initializer,
             IsStatic = method.IsStatic,
             IsConstructor = isCtor,
             IsEntryPoint = isEntryPoint,

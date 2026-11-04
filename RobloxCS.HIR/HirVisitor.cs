@@ -221,6 +221,7 @@ public abstract class HirVisitor {
     }
 
     protected virtual void VisitMethod(HirMethod node) {
+        if (node.ConstructorInitializer is { } initializer) VisitExpression(initializer);
         foreach (var param in node.Parameters) VisitParameter(param);
 
         if (node.Block is not null) VisitBlock(node.Block);

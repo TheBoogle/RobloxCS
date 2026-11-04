@@ -328,6 +328,10 @@ public sealed partial class HirLowerer {
 
         var receiver = call.Receiver is null ? Name("self") : LowerExpression(call.Receiver);
 
+        if (call.Receiver is HirThis { IsBase: true }) {
+            return Call(Index(ReferenceType(method.ContainingType, call.Location), method.Name), [receiver, .. args]);
+        }
+
         return MethodCall(receiver, method.Name, args);
     }
     

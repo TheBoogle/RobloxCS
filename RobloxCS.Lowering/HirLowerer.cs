@@ -44,7 +44,7 @@ public sealed partial class HirLowerer {
         }
 
         var statements = new List<Statement>();
-        foreach (var type in module.Types) {
+        foreach (var type in OrderTypes(module)) {
             statements.AddRange(LowerTopLevelType(type));
         }
 
@@ -184,6 +184,20 @@ public sealed partial class HirLowerer {
     }
     
     private static string ClassName(INamedTypeSymbol type) => type.Name;
+
+    private static IEnumerable<HIR.Declarations.HirType> OrderTypes(HirModule module) {
+        var remaining = new Dictionary<INamedTypeSymbol, HIR.Declarations.HirType>(SymbolEqualityComparer.Default);
+        foreach (var type in module.Types) remaining.Add(type.Symbol, type);
+        var ordered = new List<HIR.Declarations.HirType>();
+        foreach (var type in module.Types) Add(type);
+        return ordered;
+
+        void Add(HIR.Declarations.HirType type) {
+            if (!remaining.Remove(type.Symbol)) return;
+            if (type.Symbol.BaseType is { } baseType && remaining.TryGetValue(baseType.OriginalDefinition, out var parent)) Add(parent);
+            ordered.Add(type);
+        }
+    }
 
     private void Unsupported(string message, Location location) {
         Log.Debug("Reporting unsupported construct: {Message}", message);

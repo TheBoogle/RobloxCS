@@ -24,8 +24,10 @@ public sealed partial class HirLowerer {
         Log.Verbose("Lowering read of computed property {Property} to {Getter}", property.Name, getter.Name);
 
         if (property.IsStatic) {
-            return Call(Index(ClassName(property.ContainingType), getter.Name));
+            return Call(Index(ReferenceType(property.ContainingType, access.Location), getter.Name));
         }
+
+        if (access.Receiver is HirThis { IsBase: true }) return Call(Index(ReferenceType(property.ContainingType, access.Location), getter.Name), LowerPropertyReceiver(access));
 
         return MethodCall(LowerPropertyReceiver(access), getter.Name);
     }
@@ -34,7 +36,7 @@ public sealed partial class HirLowerer {
         var property = access.Symbol;
 
         if (property.IsStatic) {
-            return Index(ClassName(property.ContainingType), property.Name);
+            return Index(ReferenceType(property.ContainingType, access.Location), property.Name);
         }
 
         return Index(LowerPropertyReceiver(access), property.Name);
@@ -51,10 +53,12 @@ public sealed partial class HirLowerer {
         Log.Verbose("Lowering write of computed property {Property} to {Setter}", property.Name, setter.Name);
 
         if (property.IsStatic) {
-            return Call(Index(ClassName(property.ContainingType), setter.Name), LowerExpression(value));
+            return Call(Index(ReferenceType(property.ContainingType, access.Location), setter.Name), LowerExpression(value));
         }
 
         var receiver = LowerPropertyReceiver(access);
+
+        if (access.Receiver is HirThis { IsBase: true }) return Call(Index(ReferenceType(property.ContainingType, access.Location), setter.Name), receiver, LowerExpression(value));
 
         return MethodCall(receiver, setter.Name, LowerExpression(value));
     }

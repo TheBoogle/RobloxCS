@@ -128,7 +128,7 @@ public sealed partial class HirBuilder {
             Location = method.Locations.ResolveSingle(),
             Symbol = method,
             Parameters = [.. parameters],
-            TypeParameters = [], // todo
+            TypeParameters = method.TypeParameters,
             Block = block,
             IsStatic = method.IsStatic,
             IsConstructor = isCtor,

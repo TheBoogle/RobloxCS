@@ -10,6 +10,10 @@ namespace RobloxCS.HIR.Builder;
 public sealed partial class HirBuilder {
     public HirExpression BuildExpression(IOperation operation) {
         switch (operation.Kind) {
+            case OperationKind.DefaultValue when operation is IDefaultValueOperation value: {
+                return new HirDefault { Location = value.Syntax.GetLocation(), Type = value.Type! };
+            }
+
             case OperationKind.Literal when operation is ILiteralOperation literalOperation: {
                 return HandleLiteralOperation(literalOperation);
             }
@@ -90,6 +94,10 @@ public sealed partial class HirBuilder {
             }
 
             case OperationKind.Conversion when operation is IConversionOperation conversionOperation: {
+                if (conversionOperation.Operand is IDefaultValueOperation && conversionOperation.Type is { } defaultType) {
+                    return new HirDefault { Location = conversionOperation.Syntax.GetLocation(), Type = defaultType };
+                }
+
                 if (conversionOperation.IsTryCast) {
                     throw new NotSupportedException("Try casts are not supported yet.");
                 }

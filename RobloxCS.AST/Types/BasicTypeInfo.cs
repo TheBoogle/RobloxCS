@@ -2,6 +2,7 @@ namespace RobloxCS.AST.Types;
 
 public sealed class BasicTypeInfo : TypeInfo {
     public required string Name { get; set; }
+    public List<TypeInfo> TypeArguments { get; set; } = [];
 
     public static BasicTypeInfo FromString(string name) => new() { Name = name };
 
@@ -10,7 +11,11 @@ public sealed class BasicTypeInfo : TypeInfo {
     public static BasicTypeInfo Number() => new() { Name = "number" };
     public static BasicTypeInfo Boolean() => new() { Name = "boolean" };
 
-    public override BasicTypeInfo DeepClone() => new() { Name = Name };
+    public override BasicTypeInfo DeepClone() => new() {
+        Name = Name,
+        TypeArguments = TypeArguments.Select(type => (TypeInfo)type.DeepClone()).ToList(),
+    };
+    public override IEnumerable<AstNode> Children() => TypeArguments;
     public override void Accept(IAstVisitor v) => v.VisitBasicTypeInfo(this);
     public override T Accept<T>(IAstVisitor<T> v) => v.VisitBasicTypeInfo(this);
 

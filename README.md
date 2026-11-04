@@ -18,3 +18,16 @@ A C# to Luau compiler.
 > and the core is constantly changing.
 
 Issues and feature suggestions are welcome.
+
+## Classes
+
+The existing HIR, lowering, AST, and rendering pipeline supports:
+
+- Generic classes, constructed and nested type arguments.
+- Generic instance fields, methods, and `default(T)` with C# primitive/reference defaults.
+
+Instances use exported structural Luau type aliases. Generic type arguments are erased at runtime; constructors carry hidden default values for type parameters.
+
+Inheritance, constructor/method overloads, generic methods, static state on generic classes, `default(T)` in static generic members, and generic entry-point classes remain unsupported. Operations on constrained type parameters remain subject to the existing API/lowering limitations.
+
+The regression suite executes emitted code with `luau` and checks it with `luau-analyze`; both executables must be on PATH.

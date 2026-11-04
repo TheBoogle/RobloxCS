@@ -4,6 +4,7 @@ using RobloxCS.AST.Expressions;
 using RobloxCS.AST.Statements;
 using RobloxCS.HIR;
 using RobloxCS.HIR.Declarations;
+using RobloxCS.AST.Types;
 using Serilog;
 using static RobloxCS.Lowering.Luau;
 using TypeInfo = RobloxCS.AST.Types.TypeInfo;
@@ -26,12 +27,6 @@ public sealed partial class HirLowerer {
             return [];
         }
 
-        if (symbol.IsGenericType) {
-            Unsupported("Generic classes are not supported yet.", type.Location);
-
-            return [];
-        }
-
         if (symbol.BaseType is { SpecialType: not SpecialType.System_Object }) {
             Unsupported("Inheritance is not supported yet.", type.Location);
 
@@ -39,6 +34,15 @@ public sealed partial class HirLowerer {
         }
 
         var name = ClassName(symbol);
+        foreach (var member in symbol.GetMembers().Where(member => !member.IsStatic)) {
+            if (member is not (IMethodSymbol { MethodKind: MethodKind.Ordinary, IsOverride: false } or IPropertySymbol { IsOverride: false })) continue;
+            for (var current = symbol.BaseType; current is { SpecialType: not SpecialType.System_Object }; current = current.BaseType) {
+                if (current.GetMembers(member.Name).Any(candidate => !candidate.IsStatic)) {
+                    Unsupported("Hidden instance methods and properties are not supported yet.", member.Locations.FirstOrDefault() ?? type.Location);
+                    return [];
+                }
+            }
+        }
         var instanceFields = type.Fields.Where(field => !field.IsStatic).ToList();
         var staticFields = type.Fields.Where(field => field.IsStatic).ToList();
 
@@ -52,19 +56,19 @@ public sealed partial class HirLowerer {
         if (!symbol.IsStatic) {
             statements.Add(Assign(Index(name, "__index"), Name(name)));
 
-            if (instanceFields.Count > 0) {
-                Log.Verbose("Declaring {FieldsType} for {ClassName}", FieldsTypeName(name), name);
-
-                statements.Add(TypeDecl(FieldsTypeName(name), TableType(instanceFields.Select(field => (field.Symbol.SlotName(), LowerFieldType(field))))));
-            }
-
-            statements.Add(TypeDecl(name, Typeof(NewInstance(name, instanceFields.Count > 0)), true));
+            statements.Add(TypeDecl(name, LowerInstanceType(symbol, type.Location), true, symbol.TypeParameters.Select(TypeParameterName)));
         }
 
         foreach (var field in staticFields) {
+            if (symbol.IsGenericType && !field.Symbol.IsConst) {
+                Unsupported("Static state on generic classes is not supported because Luau erases type arguments.", field.Location);
+                continue;
+            }
             Log.Verbose("Assigning static field {ClassName}.{FieldName}", name, field.Symbol.Name);
 
-            statements.Add(Assign(Index(name, field.Symbol.SlotName()), LowerFieldValue(field)));
+            _staticContext = true;
+            statements.AddRange(_names.Capture(() => _names.Emit(Assign(Index(name, field.Symbol.SlotName()), LowerFieldValue(field)))));
+            _staticContext = false;
         }
 
         if (!symbol.IsStatic) {
@@ -86,7 +90,7 @@ public sealed partial class HirLowerer {
                 continue;
             }
 
-            statements.AddRange(LowerMethod(name, method));
+            if (!method.Symbol.IsAbstract) statements.AddRange(LowerMethod(name, method));
         }
 
         return statements;
@@ -112,7 +116,19 @@ public sealed partial class HirLowerer {
         _names.BeginFunction();
 
         var parameters = constructor is null ? [] : LowerParameters(constructor.Parameters);
-        var body = new List<Statement> { Local("self", NewInstance(name, instanceFields.Count > 0)) };
+        parameters.AddRange(type.Symbol.TypeParameters.Select(parameter => (DefaultSlot(parameter), (TypeInfo)Type("any"))));
+        var instanceType = LowerType(type.Symbol, type.Location);
+        var genericNames = type.Symbol.TypeParameters.Select(TypeParameterName).ToList();
+        var body = new List<Statement> { Local("self", Cast(Cast(NewInstance(name), Type("any")), instanceType)) };
+        body.Add(Stmt(Call(Index(name, "__init"), [Name("self"), .. parameters.Select(parameter => (Expression)Name(parameter.Name))])));
+        body.Add(Return(Name("self")));
+
+        var initializerParameters = new List<(string Name, TypeInfo Type)> { ("self", instanceType) };
+        initializerParameters.AddRange(parameters);
+        var initializerBody = new List<Statement>();
+        foreach (var parameter in type.Symbol.TypeParameters) {
+            initializerBody.Add(Assign(Index("self", DefaultSlot(parameter)), Name(DefaultSlot(parameter))));
+        }
 
         foreach (var field in instanceFields) {
             Log.Verbose(
@@ -120,21 +136,16 @@ public sealed partial class HirLowerer {
                 name, field.Symbol.SlotName(), field.Initializer is null ? "its default value" : "its initializer"
             );
 
-            body.Add(Assign(Index("self", field.Symbol.SlotName()), LowerFieldValue(field)));
+            initializerBody.AddRange(_names.Capture(() => _names.Emit(Assign(Index("self", field.Symbol.SlotName()), LowerFieldValue(field)))));
         }
-
 
         if (constructor is { IsImplicit: false }) {
-            _returnsSelf = true;
-
-            body.AddRange(LowerBlock(constructor.Block));
-
-            _returnsSelf = false;
+            initializerBody.AddRange(LowerBlock(constructor.Block));
         }
 
-        body.Add(Return(Name("self")));
-
-        return [Function(name, "new", parameters, Type(name), body)];
+        var statements = new List<Statement> { Function(name, "__init", initializerParameters, VoidType(), initializerBody, genericNames) };
+        if (!type.Symbol.IsAbstract) statements.Add(Function(name, "new", parameters, instanceType, body, genericNames));
+        return statements;
     }
 
     private List<Statement> LowerMethod(string className, HirMethod method) {
@@ -150,18 +161,54 @@ public sealed partial class HirLowerer {
         );
 
         _names.BeginFunction();
+        _staticContext = method.IsStatic;
 
         var parameters = LowerParameters(method.Parameters);
         if (!method.IsStatic) {
-            parameters.Insert(0, ("self", Type(className)));
+            parameters.Insert(0, ("self", LowerType(method.Symbol.ContainingType, method.Location)));
         }
 
         var returnType = LowerType(method.Symbol.ReturnType, method.Location);
         var body = LowerBlock(method.Block);
+        _staticContext = false;
 
         Log.Verbose("Lowered {ClassName}.{MethodName} into {StatementCount} statements", className, method.Symbol.Name, body.Count);
 
-        return [Function(className, method.Symbol.Name, parameters, returnType, body)];
+        return [Function(className, method.Symbol.Name, parameters, returnType, body, method.Symbol.ContainingType.TypeParameters.Select(TypeParameterName))];
+    }
+
+    private TypeInfo LowerInstanceType(INamedTypeSymbol symbol, Location location) {
+        var fields = new Dictionary<string, TypeInfo>(StringComparer.Ordinal);
+        var current = symbol;
+        {
+            foreach (var parameter in current.OriginalDefinition.TypeParameters) fields.TryAdd(DefaultSlot(parameter), Type("any"));
+            foreach (var member in current.GetMembers().Where(member => !member.IsStatic)) {
+                switch (member) {
+                    case IFieldSymbol { AssociatedSymbol: null } field:
+                        AddSlot(field.SlotName(), LowerStorageType(field, location));
+                        break;
+                    case IPropertySymbol property when property.IsAutoProperty():
+                        AddSlot(property.Name, property.BackingField() is { } backing ? LowerStorageType(backing, location) : LowerType(property.Type, location));
+                        break;
+                    case IFieldSymbol { AssociatedSymbol: IPropertySymbol property } field when property.Kind() is PropertyKind.SemiAuto:
+                        AddSlot(field.SlotName(), LowerStorageType(field, location));
+                        break;
+                    case IMethodSymbol method when method.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet:
+                        if (method.AssociatedSymbol is IPropertySymbol owner && owner.IsAutoProperty()) break;
+                        if (method.IsGenericMethod) break;
+                        fields.TryAdd(method.Name, new CallbackTypeInfo {
+                            Arguments = [TypeArgument.From("self", Type("any")), .. method.Parameters.Select(parameter => new TypeArgument { TypeInfo = LowerType(parameter.Type, location) })],
+                            ReturnType = LowerType(method.ReturnType, location),
+                        });
+                        break;
+                }
+            }
+        }
+        return TableType(fields.Select(field => (field.Key, field.Value)));
+
+        void AddSlot(string name, TypeInfo type) {
+            if (!fields.TryAdd(name, type)) Unsupported("Hidden instance fields and properties are not supported yet.", location);
+        }
     }
 
     private List<(string Name, TypeInfo Type)> LowerParameters(ImmutableArray<HirParameter> hirParameters) {
@@ -187,33 +234,34 @@ public sealed partial class HirLowerer {
         return parameters;
     }
 
-    private static Expression NewInstance(string name, bool hasFields) {
-        Expression seed = hasFields ? Cast(Table(), Type(FieldsTypeName(name))) : Table();
-
-        return Call("setmetatable", seed, Name(name));
-    }
-
-    private static string FieldsTypeName(string className) => $"{className}Fields";
-
-    private TypeInfo LowerFieldType(HirField field) {
-        var type = LowerType(field.Symbol.Type, field.Location);
-        var startsNil = field.Initializer is null && field.Symbol.Type.IsReferenceType;
-
-        if (startsNil || field.Symbol.NullableAnnotation is NullableAnnotation.Annotated) {
-            Log.Verbose("Field {FieldName} can be nil, typing it as optional", field.Symbol.Name);
-
-            return Optional(type);
-        }
-
-        return type;
-    }
+    private static Expression NewInstance(string name) => Call("setmetatable", Table(), Name(name));
 
     private Expression LowerFieldValue(HirField field) {
         if (field.Initializer is { } initializer) {
             return LowerExpression(initializer);
         }
 
-        return DefaultValue(field.Symbol.Type);
+        return LowerDefaultValue(field.Symbol.Type, field.Location);
+    }
+
+    private TypeInfo LowerStorageType(IFieldSymbol field, Location location) {
+        var type = LowerType(field.Type, location);
+        var startsNil = field.OriginalDefinition.Type.IsReferenceType
+            && _sourceFields.TryGetValue(field.OriginalDefinition, out var source) && source.Initializer is null;
+        return startsNil ? Optional(type) : type;
+    }
+
+    private static string TypeParameterName(ITypeParameterSymbol parameter) => $"__type{parameter.Ordinal}_{new string(parameter.Name.Select(character => char.IsAsciiLetterOrDigit(character) || character == '_' ? character : '_').ToArray())}";
+
+    private static string DefaultSlot(ITypeParameterSymbol parameter) => $"__default_{parameter.ContainingType.Name}_{parameter.Ordinal}";
+
+    private Expression LowerDefaultValue(ITypeSymbol type, Location location) {
+        if (type is not ITypeParameterSymbol parameter) return DefaultValue(type);
+        if (_staticContext) {
+            Unsupported("default(T) in static generic-class members is not supported yet.", location);
+            return Nil();
+        }
+        return Cast(Index("self", DefaultSlot(parameter)), LowerType(type, location));
     }
 
     private static Expression DefaultValue(ITypeSymbol type) {
@@ -230,6 +278,10 @@ public sealed partial class HirLowerer {
     }
 
     private TypeInfo LowerType(ITypeSymbol type, Location location) {
+        if (type is ITypeParameterSymbol parameter) {
+            return Type(TypeParameterName(parameter));
+        }
+
         if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable) {
             return Optional(LowerType(nullable.TypeArguments[0], location));
         }
@@ -272,7 +324,8 @@ public sealed partial class HirLowerer {
         }
 
         if (IsTranspiledType(type)) {
-            return Type(ReferenceType((INamedTypeSymbol)type, location));
+            var named = (INamedTypeSymbol)type;
+            return AppliedType(ReferenceType(named, location), named.TypeArguments.Select(argument => LowerType(argument, location)));
         }
         
         if (IsRobloxEnum(type)) {

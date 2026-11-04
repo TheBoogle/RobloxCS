@@ -21,6 +21,8 @@ public sealed partial class HirLowerer {
     private readonly LoweringContext _names = new();
     private readonly HashSet<INamedTypeSymbol> _moduleTypes = new(SymbolEqualityComparer.Default);
     private readonly HashSet<INamedTypeSymbol> _imports = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<IFieldSymbol, HIR.Declarations.HirField> _sourceFields = new(SymbolEqualityComparer.Default);
+    private bool _staticContext;
 
     public HirLowerer(ScriptType scriptType, ModuleGraph modules, DiagnosticBag diagnostics) {
         ScriptType = scriptType;
@@ -38,6 +40,7 @@ public sealed partial class HirLowerer {
 
         foreach (var type in module.Types) {
             _moduleTypes.Add(type.Symbol);
+            foreach (var field in type.Fields) _sourceFields[field.Symbol.OriginalDefinition] = field;
         }
 
         var statements = new List<Statement>();
@@ -85,7 +88,8 @@ public sealed partial class HirLowerer {
 
             foreach (var (type, _) in group.OrderBy(entry => entry.Type.Name, StringComparer.Ordinal)) {
                 statements.Add(Local(type.Name, Index(moduleLocal, type.Name)));
-                statements.Add(TypeDecl(type.Name, Type($"{moduleLocal}.{type.Name}")));
+                statements.Add(TypeDecl(type.Name, AppliedType($"{moduleLocal}.{type.Name}", type.TypeParameters.Select(parameter => Type(TypeParameterName(parameter)))),
+                    generics: type.TypeParameters.Select(TypeParameterName)));
             }
         }
 
@@ -124,6 +128,11 @@ public sealed partial class HirLowerer {
         var (owner, entryPoint) = entryPoints[0];
         var className = ClassName(owner.Symbol);
 
+        if (owner.Symbol.IsGenericType) {
+            Unsupported("Entry points cannot be declared on generic classes.", entryPoint.Location);
+            return [];
+        }
+
         if (entryPoint.Parameters.Length > 0) {
             Unsupported("Entry points can't take parameters.", entryPoint.Location);
 
@@ -152,10 +161,11 @@ public sealed partial class HirLowerer {
     }
     
     private bool IsTranspiledType(ITypeSymbol type) {
-        return type is INamedTypeSymbol named && (_moduleTypes.Contains(named) || Modules.TryGetModule(named, out _));
+        return type is INamedTypeSymbol named && (_moduleTypes.Contains(named.OriginalDefinition) || Modules.TryGetModule(named.OriginalDefinition, out _));
     }
 
     private string ReferenceType(INamedTypeSymbol type, Location location) {
+        type = type.OriginalDefinition;
         if (_moduleTypes.Contains(type) || !Modules.TryGetModule(type, out var module)) {
             return ClassName(type);
         }

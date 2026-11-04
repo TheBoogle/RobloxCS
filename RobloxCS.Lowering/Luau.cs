@@ -1,6 +1,7 @@
 using RobloxCS.AST;
 using RobloxCS.AST.Expressions;
 using RobloxCS.AST.Functions;
+using RobloxCS.AST.Generics;
 using RobloxCS.AST.Parameters;
 using RobloxCS.AST.Prefixes;
 using RobloxCS.AST.Statements;
@@ -16,7 +17,8 @@ internal static class Luau {
     public static NumberExpression Num(double value) => NumberExpression.From(value);
     public static BooleanExpression Bool(bool value) => new() { Value = value };
     public static TableConstructorExpression Table() => TableConstructorExpression.Empty();
-    public static TypeAssertionExpression Cast(Expression expression, TypeInfo type) => TypeAssertionExpression.From(expression, type);
+    public static TypeAssertionExpression Cast(Expression expression, TypeInfo type) => TypeAssertionExpression.From(
+        expression is TypeAssertionExpression ? new ParenthesisExpression { Expression = expression } : expression, type);
     public static VarExpression Index(string obj, string field) => Index(Name(obj), field);
 
     public static VarExpression Index(Expression obj, string field) {
@@ -74,9 +76,12 @@ internal static class Luau {
     public static ReturnStatement Return(params IEnumerable<Expression> values) => ReturnStatement.FromExpressions([.. values]);
 
     public static BasicTypeInfo Type(string name) => BasicTypeInfo.FromString(name);
+    public static BasicTypeInfo AppliedType(string name, IEnumerable<TypeInfo> arguments) => new() { Name = name, TypeArguments = [.. arguments] };
     public static BasicTypeInfo VoidType() => BasicTypeInfo.Void();
 
-    public static TypeInfo Optional(TypeInfo type) => type is BasicTypeInfo basic && !basic.Name.EndsWith('?') ? Type($"{basic.Name}?") : type;
+    public static TypeInfo Optional(TypeInfo type) => type is BasicTypeInfo basic && !basic.Name.EndsWith('?')
+        ? new BasicTypeInfo { Name = $"{basic.Name}?", TypeArguments = basic.TypeArguments }
+        : type;
     public static TypeofTypeInfo Typeof(Expression expression) => new() { Expression = expression };
 
     public static TableTypeInfo TableType(IEnumerable<(string Name, TypeInfo Type)> fields) {
@@ -90,11 +95,20 @@ internal static class Luau {
         };
     }
 
-    public static TypeDeclarationStatement TypeDecl(string name, TypeInfo type, bool exported = false) {
+    public static List<GenericDeclaration>? Generics(IEnumerable<string>? names) {
+        var parameters = names?.Select(name => new GenericDeclarationParameter {
+            Parameter = NameGenericParameter.FromString(name),
+        }).ToList();
+
+        return parameters is { Count: > 0 } ? [new GenericDeclaration { Parameters = parameters }] : null;
+    }
+
+    public static TypeDeclarationStatement TypeDecl(string name, TypeInfo type, bool exported = false, IEnumerable<string>? generics = null) {
         return new TypeDeclarationStatement {
             Name = name,
             DeclareAs = type,
             Exported = exported,
+            Declarations = Generics(generics),
         };
     }
 
@@ -103,13 +117,15 @@ internal static class Luau {
         string name,
         List<(string Name, TypeInfo Type)> parameters,
         TypeInfo returnType,
-        List<Statement> body
+        List<Statement> body,
+        IEnumerable<string>? generics = null
     ) {
         return new FunctionDeclarationStatement {
             Name = new FunctionName {
                 Names = [owner, name],
             },
             Body = new FunctionBody {
+                Generics = Generics(generics),
                 Parameters = [.. parameters.Select(parameter => (Parameter)NameParameter.FromString(parameter.Name))],
                 TypeSpecifiers = [.. parameters.Select(parameter => parameter.Type)],
                 ReturnType = returnType,

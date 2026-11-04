@@ -1,6 +1,7 @@
 using RobloxCS.AST;
 using RobloxCS.AST.Expressions;
 using RobloxCS.AST.Functions;
+using RobloxCS.AST.Generics;
 using RobloxCS.AST.Parameters;
 using RobloxCS.AST.Prefixes;
 using RobloxCS.AST.Statements;
@@ -76,6 +77,7 @@ public class RendererWalker : AstVisitorBase {
         
         _state.Builder.Append("type ");
         _state.Builder.Append(node.Name);
+        if (node.Declarations is { } declarations) RenderList(declarations);
         _state.Builder.Append(" = ");
 
         Visit(node.DeclareAs);
@@ -118,6 +120,7 @@ public class RendererWalker : AstVisitorBase {
     }
 
     public override void VisitCallbackTypeInfo(CallbackTypeInfo node) {
+        if (node.Generics is { } generics) Visit(generics);
         _state.Builder.Append('(');
 
         RenderDelimited(node.Arguments, ", ");
@@ -128,7 +131,14 @@ public class RendererWalker : AstVisitorBase {
     }
 
     public override void VisitBasicTypeInfo(BasicTypeInfo node) {
-        _state.Builder.Append(node.Name);
+        var optional = node.Name.EndsWith('?');
+        _state.Builder.Append(optional ? node.Name[..^1] : node.Name);
+        if (node.TypeArguments.Count > 0) {
+            _state.Builder.Append('<');
+            RenderDelimited(node.TypeArguments, ", ");
+            _state.Builder.Append('>');
+        }
+        if (optional) _state.Builder.Append('?');
     }
 
     public override void VisitTypeofTypeInfo(TypeofTypeInfo node) {
@@ -147,10 +157,30 @@ public class RendererWalker : AstVisitorBase {
     }
 
     public override void VisitTypeArgument(TypeArgument node) {
-        _state.Builder.Append(node.Name);
-        _state.Builder.Append(": ");
+        if (node.HasName) {
+            _state.Builder.Append(node.Name);
+            _state.Builder.Append(": ");
+        }
         Visit(node.TypeInfo);
     }
+
+    public override void VisitGenericDeclaration(GenericDeclaration node) {
+        _state.Builder.Append('<');
+        RenderDelimited(node.Parameters, ", ");
+        _state.Builder.Append('>');
+    }
+
+    public override void VisitGenericDeclarationParameter(GenericDeclarationParameter node) {
+        Visit(node.Parameter);
+        if (node.Default is { } defaultType) {
+            _state.Builder.Append(" = ");
+            Visit(defaultType);
+        }
+    }
+
+    public override void VisitNameGenericParameter(NameGenericParameter node) => _state.Builder.Append(node.Name);
+
+    public override void VisitVariadicGenericParameter(VariadicGenericParameter node) => _state.Builder.Append(node.Name).Append("...");
 
     public override void VisitLocalAssignment(LocalAssignmentStatement node) {
         _state.AppendIndent();
@@ -480,6 +510,7 @@ public class RendererWalker : AstVisitorBase {
     }
 
     public override void VisitFunctionBody(FunctionBody node) {
+        if (node.Generics is { } generics) RenderList(generics);
         _state.Builder.Append('(');
 
         if (node.Parameters.Count != node.TypeSpecifiers.Count) {

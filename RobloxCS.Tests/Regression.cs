@@ -12,6 +12,26 @@ namespace RobloxCS.Tests;
 public class Regression {
     private static readonly ConcurrentDictionary<string, string> TranspileCache = new();
 
+    [TestCase("class Box<T> { static int Value = 1; }", "Static state on generic classes")]
+    [TestCase("class Box<T> { public static T Get() => default!; }", "default(T) in static generic-class members")]
+    [TestCase("class Box<T> { public U Get<U>(U value) => value; }", "Generic methods are not supported")]
+    public void UnsupportedClassFeatures(string source, string diagnostic) {
+        var path = Path.Join(Path.GetTempPath(), $"robloxcs-{Guid.NewGuid():N}.cs");
+        try {
+            File.WriteAllText(path, source);
+            var transpiler = new CSharpTranspiler(
+                new TranspilerOptions(ScriptType.Local),
+                new CSharpCompiler(path, "RobloxCS.Types.dll", true)
+            );
+            var result = transpiler.Transpile();
+
+            Assert.That(result.Ok, Is.False);
+            Assert.That(string.Join("\n", result.Diagnostics.Select(item => item.Render())), Does.Contain(diagnostic));
+        } finally {
+            File.Delete(path);
+        }
+    }
+
     [Test, TestCaseSource(nameof(GetCases))]
     public void Behaviour(string name) {
         var outputPath = Path.Join(OutputDir, name + ".luau");

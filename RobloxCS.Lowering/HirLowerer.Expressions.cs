@@ -20,6 +20,10 @@ public sealed partial class HirLowerer {
                 return LowerLiteral(literal);
             }
 
+            case HirDefault value: {
+                return LowerDefaultValue(value.Type, value.Location);
+            }
+
             case HirLocalRef local: {
                 return Name(_names.NameFor(local.Symbol));
             }
@@ -172,10 +176,12 @@ public sealed partial class HirLowerer {
         }
 
         var args = creation.Arguments.Select(argument => LowerExpression(argument.Value)).ToList();
+        args.AddRange(type.TypeArguments.Select(argument => LowerDefaultValue(argument, creation.Location)));
 
         Log.Verbose("Lowering object creation {ClassName}.new with {ArgumentCount} arguments", type.Name, args.Count);
 
-        return Call(Index(ReferenceType(type, creation.Location), "new"), args);
+        var created = Call(Index(ReferenceType(type, creation.Location), "new"), args);
+        return type.IsGenericType ? Cast(created, LowerType(type, creation.Location)) : created;
     }
     
     private Expression LowerCoalesce(HirCoalesce coalesce) {

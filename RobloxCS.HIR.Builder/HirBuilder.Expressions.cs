@@ -98,7 +98,8 @@ public sealed partial class HirBuilder {
                     return new HirDefault { Location = conversionOperation.Syntax.GetLocation(), Type = defaultType };
                 }
 
-                if (conversionOperation.IsTryCast) {
+                var conversion = conversionOperation.GetConversion();
+                if (conversionOperation.IsTryCast && !conversion.IsReference) {
                     throw new NotSupportedException("Try casts are not supported yet.");
                 }
 
@@ -106,15 +107,18 @@ public sealed partial class HirBuilder {
                     throw new InvalidOperationException("Conversion operation does not produce a type.");
                 }
 
-                var conversion = conversionOperation.GetConversion();
+                if (conversionOperation.Syntax is CastExpressionSyntax { Type: NullableTypeSyntax }) {
+                    type = type.WithNullableAnnotation(NullableAnnotation.Annotated);
+                }
 
                 return new HirConversion {
                     Location = conversionOperation.Syntax.GetLocation(),
-                    Type = conversionOperation.Type,
+                    Type = type,
                     Operand = BuildExpression(conversionOperation.Operand),
                     Kind = ClassifyConversion(conversion, type),
                     Method = conversionOperation.OperatorMethod,
                     IsImplicit = conversion.IsImplicit,
+                    IsTryCast = conversionOperation.IsTryCast,
                 };
             }
 

@@ -63,6 +63,18 @@ public class Regression {
         Assert.That(actual, Is.True);
     }
 
+    [Test]
+    public void GenericReferenceCastsEmitLuauIntersectionAssertions() {
+        var output = Transpile(InputPath("GenericClasses.client"));
+        const string assertion = "self.PotentialInstance :: (__type0_T & Instance) | nil";
+
+        Assert.That(output, Does.Contain("__type0_T & Instance"));
+        Assert.That(output.Split(assertion).Length - 1, Is.GreaterThanOrEqualTo(2));
+        Assert.That(output, Does.Contain("self: GenericInstanceComponent<__type0_T>"));
+        Assert.That(output, Does.Not.Contain("GenericInstanceComponent<__type0_T & Instance>"));
+        Assert.That(output, Does.Contain("Get: (self: any) -> (Instance & Model) | nil"));
+    }
+
     private static string Transpile(string path) =>
         TranspileCache.GetOrAdd(path, static p => {
             var transpiler = new CSharpTranspiler(

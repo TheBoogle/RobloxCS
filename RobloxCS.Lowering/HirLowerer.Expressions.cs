@@ -383,6 +383,13 @@ public sealed partial class HirLowerer {
     }
     
     private Expression LowerConversion(HirConversion conversion) {
+        if (conversion.IsTryCast || (!conversion.IsImplicit && conversion.Kind == HirConversionKind.Reference)) {
+            var targetType = conversion.IsTryCast
+                ? conversion.Type.WithNullableAnnotation(NullableAnnotation.Annotated)
+                : conversion.Type;
+            return Cast(LowerExpression(conversion.Operand), LowerType(targetType, conversion.Location));
+        }
+
         switch (conversion.Kind) {
             case HirConversionKind.Identity:
             case HirConversionKind.Boxing:

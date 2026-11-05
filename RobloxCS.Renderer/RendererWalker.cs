@@ -580,6 +580,16 @@ public class RendererWalker : AstVisitorBase {
         RenderDelimited(node.Types, " & ");
     }
 
+    public override void VisitUnionTypeInfo(UnionTypeInfo node) {
+        for (var index = 0; index < node.Types.Count; index++) {
+            var type = node.Types[index];
+            if (type is IntersectionTypeInfo) _state.Builder.Append('(');
+            Visit(type);
+            if (type is IntersectionTypeInfo) _state.Builder.Append(')');
+            if (index != node.Types.Count - 1) _state.Builder.Append(" | ");
+        }
+    }
+
     private void RenderDelimited<T>(List<T> items, string delimiter) where T : AstNode {
         for (var i = 0; i < items.Count; i++) {
             Visit(items[i]);

@@ -79,9 +79,11 @@ internal static class Luau {
     public static BasicTypeInfo AppliedType(string name, IEnumerable<TypeInfo> arguments) => new() { Name = name, TypeArguments = [.. arguments] };
     public static BasicTypeInfo VoidType() => BasicTypeInfo.Void();
 
-    public static TypeInfo Optional(TypeInfo type) => type is BasicTypeInfo basic && !basic.Name.EndsWith('?')
-        ? new BasicTypeInfo { Name = $"{basic.Name}?", TypeArguments = basic.TypeArguments }
-        : type;
+    public static TypeInfo Optional(TypeInfo type) => type switch {
+        BasicTypeInfo basic when !basic.Name.EndsWith('?') => new BasicTypeInfo { Name = $"{basic.Name}?", TypeArguments = basic.TypeArguments },
+        IntersectionTypeInfo => UnionTypeInfo.FromInfos(type, Type("nil")),
+        _ => type,
+    };
     public static TypeofTypeInfo Typeof(Expression expression) => new() { Expression = expression };
 
     public static TableTypeInfo TableType(IEnumerable<(string Name, TypeInfo Type)> fields) {

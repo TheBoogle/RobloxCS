@@ -204,7 +204,9 @@ public sealed partial class HirLowerer {
                         AddSlot(field.SlotName(), LowerStorageType(field, location));
                         break;
                     case IPropertySymbol property when property.IsAutoProperty():
-                        AddSlot(property.Name, property.BackingField() is { } backing ? LowerStorageType(backing, location) : LowerType(property.Type, location));
+                        AddSlot(property.Name, property.BackingField() is { } backing
+                            ? LowerStorageType(backing, location)
+                            : LowerMemberType(property.Type, property.OriginalDefinition.Type, location));
                         break;
                     case IFieldSymbol { AssociatedSymbol: IPropertySymbol property } field when property.Kind() is PropertyKind.SemiAuto:
                         AddSlot(field.SlotName(), LowerStorageType(field, location));
@@ -213,8 +215,10 @@ public sealed partial class HirLowerer {
                         if (method.AssociatedSymbol is IPropertySymbol owner && owner.IsAutoProperty()) break;
                         if (method.IsGenericMethod) break;
                         fields.TryAdd(method.Name, new CallbackTypeInfo {
-                            Arguments = [TypeArgument.From("self", Type("any")), .. method.Parameters.Select(parameter => new TypeArgument { TypeInfo = LowerType(parameter.Type, location) })],
-                            ReturnType = LowerType(method.ReturnType, location),
+                            Arguments = [TypeArgument.From("self", Type("any")), .. method.Parameters.Select((parameter, index) => new TypeArgument {
+                                TypeInfo = LowerMemberType(parameter.Type, method.OriginalDefinition.Parameters[index].Type, location),
+                            })],
+                            ReturnType = LowerMemberType(method.ReturnType, method.OriginalDefinition.ReturnType, location),
                         });
                         break;
                 }
@@ -261,10 +265,24 @@ public sealed partial class HirLowerer {
     }
 
     private TypeInfo LowerStorageType(IFieldSymbol field, Location location) {
-        var type = LowerType(field.Type, location);
+        var type = LowerMemberType(field.Type, field.OriginalDefinition.Type, location);
         var startsNil = field.OriginalDefinition.Type.IsReferenceType
             && _sourceFields.TryGetValue(field.OriginalDefinition, out var source) && source.Initializer is null;
         return startsNil ? Optional(type) : type;
+    }
+
+    private TypeInfo LowerMemberType(ITypeSymbol type, ITypeSymbol originalType, Location location) {
+        if (originalType is not ITypeParameterSymbol parameter
+            || SymbolEqualityComparer.Default.Equals(type, parameter)
+            || parameter.ConstraintTypes.FirstOrDefault(constraint => constraint.TypeKind == TypeKind.Class) is not { } constraint) {
+            return LowerType(type, location);
+        }
+
+        var nullable = type.NullableAnnotation == NullableAnnotation.Annotated
+            || originalType.NullableAnnotation == NullableAnnotation.Annotated;
+        var concreteType = LowerType(type.WithNullableAnnotation(NullableAnnotation.NotAnnotated), location);
+        var constrainedType = IntersectionTypeInfo.FromInfos(LowerType(constraint, location), concreteType);
+        return nullable ? Optional(constrainedType) : constrainedType;
     }
 
     private static string TypeParameterName(ITypeParameterSymbol parameter) => $"__type{parameter.Ordinal}_{new string(parameter.Name.Select(character => char.IsAsciiLetterOrDigit(character) || character == '_' ? character : '_').ToArray())}";
@@ -295,7 +313,11 @@ public sealed partial class HirLowerer {
 
     private TypeInfo LowerType(ITypeSymbol type, Location location) {
         if (type is ITypeParameterSymbol parameter) {
-            return Type(TypeParameterName(parameter));
+            TypeInfo typeParameter = Type(TypeParameterName(parameter));
+            if (parameter.ConstraintTypes.FirstOrDefault(constraint => constraint.TypeKind == TypeKind.Class) is { } constraint) {
+                typeParameter = IntersectionTypeInfo.FromInfos(typeParameter, LowerType(constraint, location));
+            }
+            return type.NullableAnnotation == NullableAnnotation.Annotated ? Optional(typeParameter) : typeParameter;
         }
 
         if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable) {
@@ -341,7 +363,7 @@ public sealed partial class HirLowerer {
 
         if (IsTranspiledType(type)) {
             var named = (INamedTypeSymbol)type;
-            return AppliedType(ReferenceType(named, location), named.TypeArguments.Select(argument => LowerType(argument, location)));
+            return AppliedType(ReferenceType(named, location), named.TypeArguments.Select(argument => LowerTypeArgument(argument, location)));
         }
         
         if (IsRobloxEnum(type)) {
@@ -351,5 +373,14 @@ public sealed partial class HirLowerer {
         Unsupported($"Type '{type.ToDisplayString()}' is not supported yet.", location);
 
         return Type("any");
+    }
+
+    private TypeInfo LowerTypeArgument(ITypeSymbol type, Location location) {
+        if (type is ITypeParameterSymbol parameter) {
+            var typeParameter = Type(TypeParameterName(parameter));
+            return type.NullableAnnotation == NullableAnnotation.Annotated ? Optional(typeParameter) : typeParameter;
+        }
+
+        return LowerType(type, location);
     }
 }

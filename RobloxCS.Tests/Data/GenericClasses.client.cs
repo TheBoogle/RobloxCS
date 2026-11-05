@@ -57,3 +57,23 @@ internal static class GenericClasses {
         Console.WriteLine(escaped.GetSecond());
     }
 }
+
+internal class Instance {
+    public void Destroy() { }
+}
+
+internal class GenericInstanceComponent<T> where T : Instance {
+    private Instance? PotentialInstance;
+
+    public GenericInstanceComponent(T passedInstance) => PotentialInstance = passedInstance;
+
+    public T? Get() => (T?)PotentialInstance;
+
+    public T? TryGet() => PotentialInstance as T;
+}
+
+internal class Model : Instance { }
+
+internal class TestComponent : GenericInstanceComponent<Model> {
+    public TestComponent(Model passedInstance) : base(passedInstance) { }
+}

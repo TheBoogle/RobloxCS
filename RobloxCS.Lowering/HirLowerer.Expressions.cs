@@ -7,6 +7,7 @@ using RobloxCS.AST.Expressions;
 using RobloxCS.AST.Statements;
 using RobloxCS.HIR;
 using RobloxCS.HIR.Expressions;
+using RobloxCS.HIR.Statements;
 using RobloxCS.Types;
 using Serilog;
 using static RobloxCS.Lowering.Luau;
@@ -433,6 +434,27 @@ public sealed partial class HirLowerer {
             BinaryOperatorKind.ConditionalAnd => BinOp.And,
             BinaryOperatorKind.ConditionalOr => BinOp.Or,
 
+            _ => null,
+        };
+    }
+    
+    private static CompoundOp? ToCompoundOp(HirCompoundAssignment compound) {
+        var type = compound.Target.Type;
+        var integral = IsIntegral(type);
+ 
+        var numeric = compound.UserDefinedOperator is null && (integral || type.SpecialType is SpecialType.System_Single or SpecialType.System_Double);
+        var dataType = compound.UserDefinedOperator is { } method && IsDataType(method.ContainingType, out _);
+ 
+        if (!numeric && !dataType) {
+            return null;
+        }
+ 
+        return compound.Op switch {
+            BinaryOperatorKind.Add => CompoundOp.PlusEqual,
+            BinaryOperatorKind.Subtract => CompoundOp.MinusEqual,
+            BinaryOperatorKind.Multiply => CompoundOp.StarEqual,
+            BinaryOperatorKind.Divide when !integral => CompoundOp.SlashEqual,
+ 
             _ => null,
         };
     }

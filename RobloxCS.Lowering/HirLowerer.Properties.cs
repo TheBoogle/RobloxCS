@@ -1,5 +1,8 @@
-﻿using RobloxCS.AST;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
+using RobloxCS.AST;
 using RobloxCS.AST.Expressions;
+using RobloxCS.AST.Statements;
 using RobloxCS.HIR;
 using RobloxCS.HIR.Expressions;
 using Serilog;
@@ -61,6 +64,47 @@ public sealed partial class HirLowerer {
         if (access.Receiver is HirThis { IsBase: true }) return Call(Index(ReferenceType(property.ContainingType, access.Location), setter.Name), receiver, LowerExpression(value));
 
         return MethodCall(receiver, setter.Name, LowerExpression(value));
+    }
+
+    private List<Statement> LowerComputedCompound(HirPropertyAccess access, BinaryOperatorKind op, HirExpression value, IMethodSymbol? operatorMethod) {
+        Log.Verbose("Lowering compound write of computed property {Property} to getter + setter", access.Symbol.Name);
+
+        if (access.Receiver is not { } receiver) {
+            return LowerComputedCompoundOn(access, op, value, operatorMethod);
+        }
+
+        _conditionalReceivers.Push(HoistUnlessCheap(LowerExpression(receiver)));
+
+        try {
+            var target = access with {
+                Receiver = new HirConditionalReceiver {
+                    Type = receiver.Type,
+                    Location = receiver.Location,
+                },
+            };
+
+            return LowerComputedCompoundOn(target, op, value, operatorMethod);
+        } finally {
+            _conditionalReceivers.Pop();
+        }
+    }
+
+    private List<Statement> LowerComputedCompoundOn(HirPropertyAccess target, BinaryOperatorKind op, HirExpression value, IMethodSymbol? operatorMethod) {
+        var combined = new HirBinary {
+            Op = op,
+            Left = target,
+            Right = value,
+            OperatorMethod = operatorMethod,
+            IsChecked = false,
+            Type = target.Type,
+            Location = target.Location,
+        };
+
+        if (LowerSetterCall(target, combined) is not { } call) {
+            return [];
+        }
+
+        return [Stmt(call)];
     }
 
     private static bool IsComputedSourceProperty(HirExpression target, out HirPropertyAccess access) {

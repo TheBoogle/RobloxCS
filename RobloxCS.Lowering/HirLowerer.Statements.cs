@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis.Operations;
 using RobloxCS.AST;
 using RobloxCS.AST.Expressions;
 using RobloxCS.AST.Prefixes;
@@ -12,7 +13,7 @@ namespace RobloxCS.Lowering;
 public sealed partial class HirLowerer {
     private readonly Stack<List<HirStatement>> _continueIncrementors = new();
     private bool _returnsSelf;
-    
+
     private List<Statement> LowerBlock(HirBlock? block) {
         if (block is null) {
             return [];
@@ -68,7 +69,7 @@ public sealed partial class HirLowerer {
             case HirContinue stmt: {
                 return LowerContinue(stmt);
             }
-            
+
             case HirBreak: {
                 return [new BreakStatement()];
             }
@@ -76,9 +77,13 @@ public sealed partial class HirLowerer {
             case HirReturn returnStatement: {
                 return LowerReturn(returnStatement);
             }
-            
+
             case HirConditionalStatement conditional: {
                 return LowerConditionalStatement(conditional);
+            }
+
+            case HirCompoundAssignment compoundAssignment: {
+                return LowerCompoundAssignment(compoundAssignment);
             }
 
             default: {
@@ -87,6 +92,46 @@ public sealed partial class HirLowerer {
                 return [];
             }
         }
+    }
+
+    private List<Statement> LowerCompoundAssignment(HirCompoundAssignment compound) {
+        if (IsComputedSourceProperty(compound.Target, out var access)) {
+            return LowerComputedCompound(access, compound.Op, compound.Value, compound.UserDefinedOperator);
+        }
+ 
+        if (ToCompoundOp(compound) is { } op) {
+            if (LowerAssignmentTarget(compound.Target) is not { } target) {
+                return [];
+            }
+ 
+            return [
+                new CompoundAssignmentStatement {
+                    Left = target,
+                    Operator = op,
+                    Right = new VarExpression { Prefix = new ExpressionPrefix { Expression = LowerExpression(compound.Value) } },
+                },
+            ];
+        }
+ 
+        Log.Verbose("Lowering compound {Operator} to a plain assignment", compound.Op);
+ 
+        return WithStableReceiver(compound.Target, target => {
+            if (LowerAssignmentTarget(target) is not { } lowered) {
+                return [];
+            }
+ 
+            var combined = new HirBinary {
+                Op = compound.Op,
+                Left = target,
+                Right = compound.Value,
+                OperatorMethod = compound.UserDefinedOperator,
+                IsChecked = false,
+                Type = target.Type,
+                Location = compound.Location,
+            };
+ 
+            return [Assign(lowered, LowerExpression(combined))];
+        });
     }
 
     private List<Statement> LowerReturn(HirReturn statement) {
@@ -101,7 +146,7 @@ public sealed partial class HirLowerer {
         return [Return(LowerExpression(statement.Value))];
     }
 
-    private List<Statement> LowerContinue(HirContinue statement) {
+    private List<Statement> LowerContinue(HirContinue _) {
         var statements = new List<Statement>();
 
         if (_continueIncrementors.TryPeek(out var incrementors) && incrementors.Count > 0) {
@@ -150,7 +195,7 @@ public sealed partial class HirLowerer {
             },
         ];
     }
-    
+
     private List<Statement> LowerFor(HirFor loop) {
         Log.Verbose(
             "Lowering for loop ({InitializerCount} initializers, {IncrementorCount} incrementors) to a while loop",
@@ -162,8 +207,8 @@ public sealed partial class HirLowerer {
             ? LowerLoopCondition(hirCondition)
             : (Bool(true), []);
 
-        _continueIncrementors.Push([.. loop.Incrementors]);
-        List<Statement> body = [.. bodyPrefix, .. LowerBlock(loop.Body)];
+        _continueIncrementors.Push([..loop.Incrementors]);
+        List<Statement> body = [..bodyPrefix, ..LowerBlock(loop.Body)];
         _continueIncrementors.Pop();
 
         if (body.LastOrDefault() is not (BreakStatement or ContinueStatement or ReturnStatement)) {
@@ -181,11 +226,11 @@ public sealed partial class HirLowerer {
 
         return [
             new DoStatement {
-                Block = new Block { Statements = [.. initializers, whileLoop] },
+                Block = new Block { Statements = [..initializers, whileLoop] },
             },
         ];
     }
-    
+
     private List<Statement> LowerWhile(HirWhile loop) {
         Log.Verbose("Lowering while loop");
 
@@ -219,9 +264,9 @@ public sealed partial class HirLowerer {
 
             return [
                 new LocalAssignmentStatement {
-                    Names = [.. names.Select(Name)],
+                    Names = [..names.Select(Name)],
                     Types = types,
-                    Expressions = [.. declarators.Select(declarator => LowerExpression(declarator.Initializer!))],
+                    Expressions = [..declarators.Select(declarator => LowerExpression(declarator.Initializer!))],
                 },
             ];
         }
@@ -242,7 +287,7 @@ public sealed partial class HirLowerer {
         if (IsComputedSourceProperty(assignment.Target, out var propertyTarget)) {
             return LowerSetterCall(propertyTarget, assignment.Value) is { } call ? [Stmt(call)] : [];
         }
-        
+
         if (LowerAssignmentTarget(assignment.Target) is not { } target) {
             return [];
         }
@@ -288,7 +333,7 @@ public sealed partial class HirLowerer {
                 return LowerIncrementStatement(increment);
             }
         }
-        
+
         if (statement.Expression is HirObjectCreation creation) {
             return LowerExpression(creation) is FunctionCallExpression fn ? [Stmt(fn)] : [];
         }
@@ -305,8 +350,18 @@ public sealed partial class HirLowerer {
 
         return [Stmt(lowered)];
     }
-    
+
     private List<Statement> LowerIncrementStatement(HirIncrementDecrement increment) {
+        if (IsComputedSourceProperty(increment.Target, out var access)) {
+            var one = new HirLiteral {
+                Value = 1,
+                Type = access.Type,
+                Location = increment.Location,
+            };
+
+            return LowerComputedCompound(access, increment.IsIncrement ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract, one, null);
+        }
+
         if (LowerAssignmentTarget(increment.Target) is not { } target) {
             return [];
         }
@@ -324,5 +379,38 @@ public sealed partial class HirLowerer {
                 },
             },
         ];
+    }
+    
+    private List<Statement> WithStableReceiver(HirExpression target, Func<HirExpression, List<Statement>> lower) {
+        var receiver = target switch {
+            HirFieldAccess field => field.Receiver,
+            HirPropertyAccess property => property.Receiver,
+ 
+            _ => null,
+        };
+ 
+        if (receiver is null) {
+            return lower(target);
+        }
+ 
+        _conditionalReceivers.Push(HoistUnlessCheap(LowerExpression(receiver)));
+ 
+        try {
+            var stable = new HirConditionalReceiver {
+                Type = receiver.Type,
+                Location = receiver.Location,
+            };
+ 
+            HirExpression rebased = target switch {
+                HirFieldAccess field => field with { Receiver = stable },
+                HirPropertyAccess property => property with { Receiver = stable },
+ 
+                _ => target,
+            };
+ 
+            return lower(rebased);
+        } finally {
+            _conditionalReceivers.Pop();
+        }
     }
 }
